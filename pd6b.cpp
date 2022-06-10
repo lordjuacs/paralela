@@ -8,9 +8,9 @@
 #include <iostream>
 #include <vector>
 
-void bucketSort(float* arr, int& n, int bucket_size) {
+void bucketSort(double* arr, int& n, int bucket_size) {
     // Crear buckets
-    std::vector<float> bucket[bucket_size];
+    std::vector<double> bucket[bucket_size];
     int i, j, bucket_index, index = 0;
 
     // asignar elementos a los buckets
@@ -30,13 +30,13 @@ void bucketSort(float* arr, int& n, int bucket_size) {
     }
 }
 
-void swap(float* a, float* b) {
-    int t = *a;
+void swap(double* a, double* b) {
+    double t = *a;
     *a = *b;
     *b = t;
 }
 
-int partition(float* arr, int low, int high) {
+int partition(double* arr, int low, int high) {
     int pivot = arr[high];
     int i = (low - 1);
 
@@ -50,7 +50,7 @@ int partition(float* arr, int low, int high) {
     return (i + 1);
 }
 
-void quickSort(float* arr, int low, int high) {
+void quickSort(double* arr, int low, int high) {
     if (low < high) {
         int pi = partition(arr, low, high);
 
@@ -59,7 +59,7 @@ void quickSort(float* arr, int low, int high) {
     }
 }
 
-void parallelBucketSort(float* arr, int& n, int bucket_size, int rank) {
+void parallelBucketSort(double* arr, int n, int bucket_size, int rank) {
     /*
     Se implementó una asignación de buckets en un arreglo auxiliar para de esta forma,
     poder dividirlo mediante scatter para poder realizar los ordenamientos de forma paralelo,
@@ -68,68 +68,87 @@ void parallelBucketSort(float* arr, int& n, int bucket_size, int rank) {
     estos ordenados de forma paralela, bastaría con juntar cada uno de los segmentos para resolver el problema.
     */
 
-    std::vector<float> new_arr[bucket_size];
+    std::vector<double> new_arr[bucket_size];
     int bucket_index = 0;
     for (int i = 0; i < n; ++i) {
         bucket_index = bucket_size * arr[i] / 1000;
         new_arr[bucket_index].push_back(arr[i]);
     }
-    /*for (int i = 0; i < bucket_size; ++i) {
-        for (int j = 0; j < new_arr[i].size(); j++) {
-            printf("%1.2f, ", new_arr[i][j]);
-        }
-        printf("|");
-    }
-    printf("\n");*/
-    if (rank == 0) {
-        int cont = 0;
-        for (auto& vec : new_arr) {
-            for (int i = 0; i < vec.size(); i++) {
-                arr[cont++] = vec[i];
-            }
-        }
-    }
-    float* bucket = new float[n / bucket_size];
 
-    MPI_Scatter(arr, n / bucket_size, MPI_FLOAT, bucket, n / bucket_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
-    quickSort(bucket, 0, (n / bucket_size) - 1);
-    /*for (int j = 0; j < n / bucket_size; j++) {
-        printf("%1.2f, ", bucket[j]);
+    int max_elements = 0;
+    for (int i = 0; i < bucket_size; ++i) {
+        if (new_arr[i].size() > max_elements)
+            max_elements = new_arr[i].size();
     }
-    printf("\n");*/
-    MPI_Gather(bucket, n / bucket_size, MPI_FLOAT, arr, n / bucket_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+
+    int extra = 0;
+    for (int i = 0; i < bucket_size; ++i) {
+        while (new_arr[i].size() < max_elements) {
+            new_arr[i].push_back(-1);
+            extra++;
+        }
+    }
+
+    double* final_arr = new double[n + extra];
+    int index = 0;
+    for (int i = 0; i < bucket_size; ++i) {
+        for (int j = 0; j < new_arr[i].size(); ++j) {
+            final_arr[index++] = new_arr[i][j];
+        }
+    }
+
+    n += extra;
+    double* bucket = new double[n / bucket_size];
+
+    MPI_Scatter(final_arr, n / bucket_size, MPI_DOUBLE, bucket, n / bucket_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    double start = MPI_Wtime();
+    quickSort(bucket, 0, (n / bucket_size) - 1);
+    double end = MPI_Wtime();
+    printf("Tiempo de ordenamiento: %f\t Rank: %d\n", end - start, rank);
+
+    MPI_Gather(bucket, n / bucket_size, MPI_DOUBLE, final_arr, n / bucket_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    index = 0;
+    for (int i = 0; i < n; ++i) {
+        if (final_arr[i] != -1) {
+            arr[index++] = final_arr[i];
+        }
+    }
 }
 
 int main(int argc, char* argv[]) {
-    int i, n = pow(2, 4);  // para probarlo con 2^19 es mucho print en consola, se hara en la entrega final
+    int i, n = pow(2,19);
     int rank, size;
-    float* randArray;
+    double* randArray;
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     srand((int)time(0));
 
-    randArray = new float[n];
+    randArray = new double[n];
 
     for (int i = 0; i < n; ++i)
-        randArray[i] = (float)rand() / (float)(RAND_MAX / 999.0);
+        randArray[i] = (double)rand() / (double)(RAND_MAX / 999.0);
 
+    // if (rank == 0) {
+    //     printf("desordenado:\t");
+    //     for (i = 0; i < n; ++i)
+    //         printf("%1.2f, ", randArray[i]);
+    //     printf("\n");
+    // }
+
+    double start = MPI_Wtime();
+    parallelBucketSort(randArray, n, size, rank);
+    double end = MPI_Wtime();
+    double time = end - start;
     if (rank == 0) {
-        printf("desordenado:\t");
-        for (i = 0; i < n; ++i)
-            printf("%1.2f, ", randArray[i]);
-        printf("\n");
+        // printf("ordenado:\t");
+        // for (i = 0; i < n; ++i)
+        //     printf("%1.2f, ", randArray[i]);
+        // printf("\n");
+        printf("Tiempo: %f\n", time);
     }
-
-    // bucketSort(randArray, n, 8);
-    if (rank == 0) {
-        parallelBucketSort(randArray, n, size, rank);
-
-        printf("ordenado:\t");
-        for (i = 0; i < n; ++i)
-            printf("%1.2f, ", randArray[i]);
-
-        delete[] randArray;
-    }
+    delete[] randArray;
     MPI_Finalize();
 }
